@@ -1,4 +1,4 @@
-package de.androidcrypto.nfcisodeptagdump;
+package de.androidcrypto.mifaredesfireev2proximitycheck;
 
 import android.content.Context;
 

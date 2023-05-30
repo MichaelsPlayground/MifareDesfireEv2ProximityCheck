@@ -1,4 +1,4 @@
-package de.androidcrypto.nfcisodeptagdump;
+package de.androidcrypto.mifaredesfireev2proximitycheck;
 
 public class Utils {
 

@@ -30,7 +30,7 @@
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content"
                 android:padding="10dp"
-                android:text="This app dumps data with IsoDep from a NFC-Tag of type NXP NTAG216 only."
+                android:text="Mifare DESFire EV2/EV3 Proximity Check"
                 android:textAlignment="center"
                 android:textSize="20sp"
                 android:textStyle="bold" />
