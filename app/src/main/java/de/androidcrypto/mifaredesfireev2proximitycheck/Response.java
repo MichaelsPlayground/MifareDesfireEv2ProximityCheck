@@ -20,8 +20,8 @@ public class Response {
             this.sw2 = (byte) 0xFF;
         }
         this.data = Arrays.copyOf(fullData, fullData.length - 2);
-        this.sw1 = fullData[fullData.length - 1];
-        this.sw2 = fullData[fullData.length - 0];
+        this.sw1 = fullData[fullData.length - 2];
+        this.sw2 = fullData[fullData.length - 1];
     }
 
     public byte[] getData() {

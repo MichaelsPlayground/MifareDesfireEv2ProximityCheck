@@ -16,6 +16,7 @@ import android.os.Bundle;
 import android.os.VibrationEffect;
 import android.os.Vibrator;
 import android.provider.Settings;
+import android.util.Log;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.widget.TextView;
@@ -39,6 +40,7 @@ import java.util.List;
 
 public class MainActivity extends AppCompatActivity implements NfcAdapter.ReaderCallback {
 
+    private static final String TAG = "DF ProxCheck";
     TextView dumpField, readResult;
     private NfcAdapter mNfcAdapter;
     String dumpExportString = "";
@@ -46,6 +48,10 @@ public class MainActivity extends AppCompatActivity implements NfcAdapter.Reader
     String tagTypeString = "";
     private static final int REQUEST_PERMISSION_WRITE_EXTERNAL_STORAGE = 100;
     Context contextSave;
+
+    private final byte SW1_OK = (byte) 0x91;
+    private final byte SW2_OK = (byte) 0x00;
+    private final byte SW2_MORE_DATA = (byte) 0xAF;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -127,8 +133,18 @@ public class MainActivity extends AppCompatActivity implements NfcAdapter.Reader
                  *
                  */
 
+                // this is just for testing the getVersion command
+                writeToUiAppend(readResult, "");
+                writeToUiAppend(readResult, "GET UID");
+                byte GET_UID = (byte) 0x51;
+                Response response = sendData(isoDep, GET_UID, null);
 
+                writeToUiAppend(readResult, printData("data", response.getData()) + " sw1: " + response.getSw1() + " sw2: " + response.getSw2());
 
+                if (!checkResponse(readResult, response)) {
+                    return;
+                };
+                writeToUiAppend(readResult, printData("get UID", response.getData()));
 
             } else {
                 writeToUiAppend(readResult, "IsoDep == null");
@@ -139,15 +155,54 @@ public class MainActivity extends AppCompatActivity implements NfcAdapter.Reader
         }
     }
 
+
+
     /**
      * section for the sending of a command with or without parameters/data to a card
      */
 
     private Response sendData(IsoDep isoDep, byte command, byte[] parameters) {
-
-        return null;
+        byte[] response;
+        byte[] wrappedCommand = new byte[0];
+        try {
+            if (parameters == null) {
+                wrappedCommand = wrapMessage(command);
+            } else {
+                wrapMessage(command, parameters);
+            }
+            Log.d(TAG, printData("wrappedCommand" , wrappedCommand));
+            response = isoDep.transceive(wrappedCommand);
+            if (response == null) {
+                // either communication to the tag was lost or any other error was received
+                writeToUiAppend(readResult, "ERROR: null response");
+                return null;
+            }
+        } catch (TagLostException e) {
+            // Log and return
+            runOnUiThread(() -> {
+                readResult.setText("ERROR: Tag lost exception or command not recognized " + e.getMessage());
+            });
+            return null;
+        } catch (IOException e) {
+            writeToUiAppend(readResult, "ERROR: IOException " + e.getMessage());
+            e.printStackTrace();
+            return null;
+        }
+        Log.d(TAG, printData("response", response));
+        return new Response(response);
     }
 
+    private boolean checkResponse(TextView readResult, Response response) {
+        if (response.getSw1() != SW1_OK) {
+            writeToUiAppend(readResult, "The response of SW1 is not 0x91, aborted because found " + String.format("%02X", response.getSw1()));
+            return false;
+        }
+        if ((response.getSw2() != SW2_OK) && (response.getSw2() != SW2_MORE_DATA)) {
+            writeToUiAppend(readResult, "The response of SW2 is not 0x00 or 0xAF, aborted because found " + String.format("%02X", response.getSw2()));
+            return false;
+        }
+        return true;
+    }
 
     /**
      * section for wrapping a native command in ISO/IEC 7816-4 structure
@@ -287,6 +342,26 @@ public class MainActivity extends AppCompatActivity implements NfcAdapter.Reader
                     + Character.digit(s.charAt(i + 1), 16));
         }
         return data;
+    }
+
+    public String printData(String dataName, byte[] data) {
+        int dataLength;
+        String dataString = "";
+        if (data == null) {
+            dataLength = 0;
+            dataString = "IS NULL";
+        } else {
+            dataLength = data.length;
+            dataString = Utils.bytesToHex(data);
+        }
+        StringBuilder sb = new StringBuilder();
+        sb
+                .append(dataName)
+                .append(" length: ")
+                .append(dataLength)
+                .append(" data: ")
+                .append(dataString);
+        return sb.toString();
     }
 
     private void writeToUiAppend(TextView textView, String message) {
