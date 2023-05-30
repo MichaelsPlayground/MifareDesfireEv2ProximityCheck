@@ -30,6 +30,7 @@ import androidx.appcompat.widget.Toolbar;
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
+import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.util.ArrayList;
@@ -137,6 +138,45 @@ public class MainActivity extends AppCompatActivity implements NfcAdapter.Reader
             e.printStackTrace();
         }
     }
+
+    /**
+     * section for the sending of a command with or without parameters/data to a card
+     */
+
+    private Response sendData(IsoDep isoDep, byte command, byte[] parameters) {
+
+        return null;
+    }
+
+
+    /**
+     * section for wrapping a native command in ISO/IEC 7816-4 structure
+     */
+
+    public static byte[] wrapMessage(byte command)  {
+        return new byte[]{(byte) 0x90, command, 0x00, 0x00, 0x00};
+    }
+
+    public static byte[] wrapMessage(byte command, byte[] parameters) {
+        return wrapMessage(command, parameters, 0, parameters.length);
+    }
+
+    public static byte[] wrapMessage(byte command, byte[] parameters, int offset, int length) {
+        ByteArrayOutputStream stream = new ByteArrayOutputStream();
+        stream.write((byte) 0x90);
+        stream.write(command);
+        stream.write((byte) 0x00);
+        stream.write((byte) 0x00);
+        if (parameters != null && length > 0) {
+            // actually no length if empty length
+            stream.write(length);
+            stream.write(parameters, offset, length);
+        }
+        stream.write((byte) 0x00);
+        return stream.toByteArray();
+    }
+
+
 
     /**
      * Determines whether the specified byte array starts with the specific bytes.
