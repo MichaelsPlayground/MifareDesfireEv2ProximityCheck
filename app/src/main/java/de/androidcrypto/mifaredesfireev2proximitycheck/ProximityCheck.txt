@@ -1,0 +1,485 @@
+#! /usr/bin/env python
+"""
+Script to talk with the Mifare DESFire using Python and the ACR122 reader.
+pyscard library is used to provide interface to PS/SC device.
+
+Note that python 3 must be used.
+
+We send APDU through the reader to the card, and then listens for and returns the response.
+
+A command APDU is defined in ISO/IEC 7816-4 as (CLA, INS, P1, P2, (optional Lc), (optional data), Le)
+where:
+	CLA = Instruction class - indicates the type of command, e.g. interindustry or proprietary
+	INS = Instruction code - indicates the specific command, e.g. "write data"
+	P1-P2 = Instruction parameters for the command, e.g. offset into file at which to write the data
+	Lc = Encodes the number (Nc) of bytes of command data to follow
+	Le = Encodes the maximum number (Ne) of response bytes expected
+
+A response APDU is defined as (Response, SW1, SW2)
+"""
+
+from smartcard.Exceptions import NoCardException
+from smartcard.System import readers
+from smartcard.util import toHexString
+
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import cmac
+from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+
+
+
+# Define the APDUs used in this script
+GET_UID = [0xff, 0xca, 0x00, 0x00, 0x00]
+GET_ATS = [0xFF, 0xCA, 0x01, 0x00, 0x00]
+
+
+def connect_reader():
+	reader = readers()[0]
+	try:
+	    connection = reader.createConnection()
+	    connection.connect()
+	    print("Reader is:", reader, "\nATR =", toHexString(connection.getATR()))
+	except NoCardException:
+	    print(reader, 'no card inserted')
+	return connection
+
+def send_mfpcmd(connection, cmd, data):
+	"""
+	Sends a Mifare Plus command and receives and response.
+	Applies ISO 7816-4 wrapping of native APDU
+	(see MFP EV1 product data sheet, section 8.2.4)
+	"""
+	apdu = [0x90]		#CLA
+	apdu.append(cmd) 	#INS
+	apdu.append(0x00) 	#P1
+	apdu.append(0x00) 	#P2
+	data_string = ""
+	if(data != None):	#DATA
+		apdu.append(len(data)) 	#Lc
+		for data_piece in data:
+			apdu.append(data_piece)
+		data_string += toHexString(data)
+	apdu.append(0x00)	#Le
+
+	print("<sent>:		%02X" % cmd, data_string)
+	data, sw1, sw2 = connection.transmit(apdu)
+	# sw2 has the return code from the Mifare Plus manual, while sw1 is used for higher-level error checking
+	if(sw1 != 0x91):
+		print("SW1 was not equal to 0x91.")
+		exit()
+	print("<recvd>:		%02X" %(sw2), toHexString(data))
+	return sw2, data
+
+def getUID(connection):
+	# Get the UID.
+	data, sw1, sw2 = connection.transmit(GET_UID)
+	print("\nConnected to a card with a UID =", toHexString(data))
+
+def getATS(connection):
+	# Get the ATS.
+	data, sw1, sw2 = connection.transmit(GET_ATS)
+	print("and an ATS =", toHexString(data), "\n")
+
+def getVersion(connection):
+	# Run the getVersion command.
+	send_mfpcmd(connection, 0x60, None)
+	send_mfpcmd(connection, 0xAF, None)
+	send_mfpcmd(connection, 0xAF, None)
+
+def proximityCheck(connection):
+	# Run the proximity check/distance-bounding protocol
+
+	#PreparePC
+	COMMAND_CODE = 0xF0
+	sw2, data = send_mfpcmd(connection, COMMAND_CODE, None)
+	print(toHexString(data))
+	SC = sw2
+	OPT = data[0]
+	pubRespTime = data[1:3]
+	if(OPT == 0x01):
+		PPS1 = data[3]
+	else:
+		PPS1 = None
+	print("SC = %02X, OPT = %02X, pubRespTime = %02X %02X, PPS1 = %02X" %(SC, OPT, pubRespTime[0], pubRespTime[1], PPS1))
+
+	#PC
+	COMMAND_CODE = 0xF2
+	RndC = [0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07] #Random Challenge
+	RndR = [] #Random Response
+	num_rounds = 0x01 #Needs to be 1, 2, 4, or 8.
+	part_len = int(0x08 / num_rounds)
+	MAC_parts_string = ""
+	j = 0
+	for _ in range(0, num_rounds):
+		cmd_array = []
+		pRndC = []
+		cmd_array.append(part_len)
+		for _ in range(0, part_len):
+			cmd_array.append(RndC[j])
+			pRndC.append(RndC[j])
+			j += 1
+		sw2, data = send_mfpcmd(connection, COMMAND_CODE, cmd_array)
+		for pRndR in data:
+			RndR.append(pRndR)
+		MAC_parts_string += toHexString(RndR)
+		MAC_parts_string += toHexString(pRndC)
+	#Get rid of whitespace
+	MAC_parts_string = MAC_parts_string.replace(" ", "")
+	print("RndR =", toHexString(RndR))
+	print("MAC_parts_string =", MAC_parts_string)
+
+	#VerifyPC
+	COMMAND_CODE = 0xFD
+	key = "00" * 16
+	key = bytes.fromhex(key)
+
+	#Part 1 - Reader MAC
+	reader_MAC_string = '{:02x}'.format(COMMAND_CODE) + '{:02x}'.format(OPT) + toHexString(pubRespTime).replace(" ", "") + '{:02x}'.format(PPS1) + MAC_parts_string
+	print("reader_MAC_string =", reader_MAC_string)
+	reader_MAC_string = bytes.fromhex(reader_MAC_string)
+	c = cmac.CMAC(algorithms.AES(key), backend=default_backend())
+	c.update(reader_MAC_string) #Calculate the MAC using update() and return it using finalize()
+	reader_MAC = c.finalize()
+	print("Output of CMAC function (reader) =", reader_MAC.hex())
+	reader_MAC_input = []
+	i = 2
+	for _ in range(0, 8):
+		reader_MAC_input.append(int(reader_MAC.hex()[i:i+2], 16))
+		i += 4
+	print("reader_MAC_input =", toHexString(reader_MAC_input))
+	sw2, data = send_mfpcmd(connection, COMMAND_CODE, reader_MAC_input)
+
+	#Part 2 - PICC MAC
+	PICC_MAC_string = '90' + '{:02x}'.format(OPT) + toHexString(pubRespTime).replace(" ", "") + '{:02x}'.format(PPS1) + MAC_parts_string
+	print("PICC_MAC_string =", PICC_MAC_string)
+	PICC_MAC_string = bytes.fromhex(PICC_MAC_string)
+	c = cmac.CMAC(algorithms.AES(key), backend=default_backend())
+	c.update(PICC_MAC_string) #Calculate the MAC using update() and return it using finalize()
+	#Can also use the c.verify() function here to compare the MACs automatically.
+	reader_MAC = c.finalize()
+	print("Output of CMAC function (PICC) =", reader_MAC.hex())
+	expected_PICC_response = []
+	i = 2
+	for _ in range(0, 8):
+		expected_PICC_response.append(int(reader_MAC.hex()[i:i+2], 16))
+		i += 4
+	print("Expected PICC response =", toHexString(expected_PICC_response))
+
+
+#rotate the input_str left over 1 byte, i.e. move the first byte to the end (MSB byte to LSB position)
+def rotate_left(input_str):
+	new_str = input_str[2:] + input_str[:2]
+	return new_str
+
+
+def authenticate(connection, keynum, key):
+	#Authenticate Part 1
+	COMMAND_CODE = 0x0A
+	keynum = int(keynum, 16)
+	cmd_string = [keynum]
+	sw2, data = send_mfpcmd(connection, COMMAND_CODE, cmd_string)
+	encryptedRndB = toHexString(data).replace(" ", "")
+	print("RndB (ciphertext) = ", encryptedRndB)
+	#Decrypt to find RndB. TripleDES is used rather than AES, so the blocks are 8 bytes in size.
+	encryptedRndB = bytes.fromhex(encryptedRndB)
+	iv = "00"*8
+	iv = bytes.fromhex(iv)
+	cipher = Cipher(algorithms.TripleDES(key), modes.CBC(iv), backend=default_backend())
+	decryptor = cipher.decryptor()
+	RndB = decryptor.update(encryptedRndB) + decryptor.finalize()
+	RndB = RndB.hex()
+	print("RndB (plaintext) = ", RndB)
+
+	#Authenticate Part 2
+	COMMAND_CODE = 0xAF
+	RndA = "00"*8 # "Random" number from the PCD
+	RndAB = RndA + rotate_left(RndB)
+	#RndAB = RndA + RndB
+	#Encrypt RndAB
+	RndAB = bytes.fromhex(RndAB)
+	print("RndAB (plaintext) = ", RndAB.hex())
+	encryptor = cipher.encryptor()
+	encryptedRndAB = encryptor.update(RndAB) + encryptor.finalize()
+	encryptedRndAB = encryptedRndAB.hex()
+	print("RndAB (ciphertext) = ", encryptedRndAB)
+	cmd_string = []
+	i = 0
+	for _ in range(0, len(RndA)):
+		cmd_string.append(int(encryptedRndAB[i:i+2], 16))
+		i += 2
+	sw2, data = send_mfpcmd(connection, COMMAND_CODE, cmd_string)
+
+	#Find and return the session key
+	sessionKey = ""
+	#See NXP D40 authentication example for how to generate session key. Doesn't make sense without seeing the example.
+	sessionKey += RndA[0:2] + RndA[2:4] + RndA[4:6] + RndA[6:8]
+	sessionKey += RndB[0:2] + RndB[2:4] + RndB[4:6] + RndB[6:8]
+	sessionKey += RndA[0:2] + RndA[2:4] + RndA[4:6] + RndA[6:8]
+	sessionKey += RndB[0:2] + RndB[2:4] + RndB[4:6] + RndB[6:8]
+	#sessionKey += RndA[8:10] + RndA[10:12] + RndA[12:14] + RndA[14:16]
+	#sessionKey += RndB[8:10] + RndB[10:12] + RndB[12:14] + RndB[14:16]
+	print("RndA = " + RndA + ", RndB = " + RndB)
+	print("sessionKey = " + sessionKey)
+	return sessionKey #Return the D40 Secure Messaging Session Key
+
+def authenticateAES(connection, keynum, key):
+	#Authenticate Part 1
+	COMMAND_CODE = 0xAA
+	keynum = int(keynum, 16)
+	cmd_string = [keynum]
+	sw2, data = send_mfpcmd(connection, COMMAND_CODE, cmd_string)
+	encryptedRndB = toHexString(data).replace(" ", "")
+	print("RndB (ciphertext) = ", encryptedRndB)
+	#Decrypt to find RndB. TripleDES is used rather than AES, so the blocks are 8 bytes in size.
+	encryptedRndB = bytes.fromhex(encryptedRndB)
+	iv = "00"*16 #An IV of 0 is only used for this first crypto operation
+	iv = bytes.fromhex(iv)
+	cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+	decryptor = cipher.decryptor()
+	RndB = decryptor.update(encryptedRndB) + decryptor.finalize()
+	RndB = RndB.hex()
+	print("RndB (plaintext) = ", RndB)
+	currentIV = encryptedRndB.hex()
+	print("currentIV = " + currentIV)
+
+	#Authenticate Part 2
+	COMMAND_CODE = 0xAF
+	RndA = "00"*16 # "Random" number from the PCD
+	RndAB = RndA + rotate_left(RndB)
+	#Encrypt RndAB
+	RndAB = bytes.fromhex(RndAB)
+	print("RndAB (plaintext) = ", RndAB.hex())
+	iv = currentIV
+	iv = bytes.fromhex(iv)
+	cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+	encryptor = cipher.encryptor()
+	encryptedRndAB = encryptor.update(RndAB) + encryptor.finalize()
+	encryptedRndAB = encryptedRndAB.hex()
+	print("RndAB (ciphertext) = ", encryptedRndAB)
+	cmd_string = []
+	i = 0
+	for _ in range(0, len(RndA)):
+		cmd_string.append(int(encryptedRndAB[i:i+2], 16))
+		i += 2
+	sw2, data = send_mfpcmd(connection, COMMAND_CODE, cmd_string)
+	currentIV = encryptedRndAB[32:]
+	print("currentIV = " + currentIV)
+
+	#Find and return the session key
+	sessionKey = ""
+	#See NXP EV1 authentication example for how to generate session key.
+	sessionKey += RndA[0:2] + RndA[2:4] + RndA[4:6] + RndA[6:8]
+	sessionKey += RndB[0:2] + RndB[2:4] + RndB[4:6] + RndB[6:8]
+	sessionKey += RndA[24:26] + RndA[26:28] + RndA[28:30] + RndA[30:32]
+	sessionKey += RndB[24:26] + RndB[26:28] + RndB[28:30] + RndB[30:32]
+	print("RndA = " + RndA + ", RndB = " + RndB)
+	print("sessionKey = " + sessionKey)
+	return sessionKey, currentIV
+
+def changeKeyD40(keynum, key, sessionKey):
+	COMMAND_CODE = 0xC4
+	keynum = int(keynum, 16)
+	AuthKey = bytes.fromhex(sessionKey) #sessionKey obtained from authentication (for D40 secure messaging)
+	#Calculate the crytogram; see Section 6.5.6.1 of the datasheet. We are using D40 secure messaging.
+	plaincryptogram = key
+	plaincryptogram += "00" #KeyVer
+	plaincryptogram += "7545" #CRC16, CRC of "0x00*16 0x00" = 0x75 0x45
+	plaincryptogram += "3749" #CRC16NK, CRC of "0x00*16" = 0x37 0x49
+	plaincryptogram += "000000" #Pad 3 bytes to get to 24 bytes
+	print("plaincryptogram = ", plaincryptogram)
+	#Manually break the plain cryptogram into three 8-byte segments
+	plaincryptogram1 = plaincryptogram[0:16]
+	plaincryptogram1 = bytes.fromhex(plaincryptogram1)
+	plaincryptogram2 = plaincryptogram[16:32]
+	plaincryptogram2 = bytes.fromhex(plaincryptogram2)
+	plaincryptogram3 = plaincryptogram[32:48]
+	plaincryptogram3 = bytes.fromhex(plaincryptogram3)
+	iv = "00"*8
+	iv = bytes.fromhex(iv)
+	cipher = Cipher(algorithms.TripleDES(AuthKey), mode = modes.CBC(iv), backend=default_backend())
+	decryptor = cipher.decryptor()
+	cryptogram1 = decryptor.update(plaincryptogram1) + decryptor.finalize()
+	#XOR before feeding into the decrypt block
+	plaincryptogram2 = bytes.fromhex(hex(int(plaincryptogram2.hex(), 16) ^ int(cryptogram1.hex(), 16))[2:])
+	cryptogram2 = decryptor.update(plaincryptogram2) + decryptor.finalize()
+	plaincryptogram3 = bytes.fromhex(hex(int(plaincryptogram3.hex(), 16) ^ int(cryptogram2.hex(), 16))[2:])
+	cryptogram3 = decryptor.update(plaincryptogram3) + decryptor.finalize()
+	cryptogram = cryptogram1.hex() + cryptogram2.hex() + cryptogram3.hex()
+	print("Cryptogram = ", cryptogram)
+	#cryptogram = ("00"*24) #test sending all 0's as the cryptogram
+	cmd_string = [keynum]
+	i = 0
+	for _ in range(0, int(len(cryptogram) / 2)):
+		cmd_string.append(int(cryptogram[i:i+2], 16))
+		i += 2
+	#print("cmd_string = ", cmd_string)
+	sw2, data = send_mfpcmd(connection, COMMAND_CODE, cmd_string)
+	#print("Change key response = ", data)
+
+
+def changeKeyEV1(keynum, key, sessionKey, currentIV):
+	COMMAND_CODE = 0xC4
+	keynum = int(keynum, 16)
+	AuthKey = bytes.fromhex(sessionKey) #sessionKey obtained from authenticateAES (used for all EV1 secure messaging once authenticated)
+	#Calculate the crytogram; see Section 6.5.6.1 of the datasheet. We are using EV1 secure messaging.
+	plaincryptogram = key #previous key XOR new key, but doesn't matter b/c they are both 0
+	plaincryptogram += "00" #KeyVer
+	plaincryptogram += "DB0192A9" #CRC32, CRC of "0xC4 0x21 0x00*16 0x00" = 0xA99201DB, reversed = DB0192A9
+	plaincryptogram += "AAB44413" #CRC32NK, CRC of "0x00*16" = 0x1344B4AA, reversed = AAB44413
+	plaincryptogram += "00000000000000" #Pad 9 bytes to get to 32 bytes
+	print("plaincryptogram = ", plaincryptogram)
+	plaincryptogram = bytes.fromhex(plaincryptogram)
+	iv = currentIV
+	iv = bytes.fromhex(iv)
+	cipher = Cipher(algorithms.AES(AuthKey), mode = modes.CBC(iv), backend=default_backend())
+	encryptor = cipher.encryptor()
+	cryptogram = encryptor.update(plaincryptogram) + encryptor.finalize()
+	cryptogram = cryptogram.hex()
+	print("Cryptogram = ", cryptogram)
+	#cryptogram = ("00"*24) #test sending all 0's as the cryptogram
+	cmd_string = [keynum]
+	i = 0
+	for _ in range(0, int(len(cryptogram) / 2)):
+		cmd_string.append(int(cryptogram[i:i+2], 16))
+		i += 2
+	#print("cmd_string = ", cmd_string)
+	sw2, data = send_mfpcmd(connection, COMMAND_CODE, cmd_string)
+	#print("Change key response = ", data)
+
+def getKeyVersion(keynum):
+	COMMAND_CODE = 0x64
+	keynum = int(keynum, 16)
+	cmd_string = [keynum]
+	sw2, data = send_mfpcmd(connection, COMMAND_CODE, cmd_string)
+
+
+def crypto_example():
+	#A normal encryption and decryption from the NIST examples to make sure I'm using the crypto library correctly.
+	plaintext = "6bc1bee22e409f96e93d7e117393172a" # First block of NIST example
+	print("Plaintext: ", plaintext)
+	plaintext = bytes.fromhex(plaintext)
+	key = "2b7e151628aed2a6abf7158809cf4f3c"
+	key = bytes.fromhex(key)
+	iv = "000102030405060708090a0b0c0d0e0f"
+	iv = bytes.fromhex(iv)
+	cipher = Cipher(algorithms.AES(key), modes.CBC(iv), backend=default_backend())
+	encryptor = cipher.encryptor()
+	ciphertext = encryptor.update(plaintext) + encryptor.finalize()
+	ciphertext = ciphertext.hex()
+	print("Ciphertext: ", ciphertext)
+
+
+def nxp_d40_crypto_example():
+	prevkey = "01020304050607080910111213141516"
+	newkey = "F0E1D2C3B4A596870F1E2D3C4B5A6978"
+	xored = hex(int(prevkey, 16) ^ int(newkey, 16))
+	prevkey = bytes.fromhex(prevkey)
+	newkey = bytes.fromhex(newkey)
+	CRC16 = "6472"
+	CRC16NK = "5E54"
+	plaincryptogram = xored[2:] + CRC16 + CRC16NK + "00000000" #Table 59 example
+	#plaincryptogram = "B0B1B2B3B4B5B6B7B8B9BABBBCBDBEBF2038000000000000" #Table 60 example
+	#print("plaincryptogram = ", plaincryptogram)
+	#Manually split plaincryptogram into three 8-byte segments to later be fed into the Triple DES cipher
+	plaincryptogram1 = plaincryptogram[0:16]
+	plaincryptogram1 = bytes.fromhex(plaincryptogram1)
+	plaincryptogram2 = plaincryptogram[16:32]
+	plaincryptogram2 = bytes.fromhex(plaincryptogram2)
+	plaincryptogram3 = plaincryptogram[32:48]
+	plaincryptogram3 = bytes.fromhex(plaincryptogram3)
+	plaincryptogram = bytes.fromhex(plaincryptogram)
+	AuthKey = "1C94D15B507F862C6DD3C3BEF2C8FA75"
+	AuthKey = bytes.fromhex(AuthKey)
+	iv = "00"*8
+	iv = bytes.fromhex(iv)
+	cipher = Cipher(algorithms.TripleDES(AuthKey), mode = modes.CBC(iv), backend=default_backend())
+	decryptor = cipher.decryptor()
+	cryptogram1 = decryptor.update(plaincryptogram1) + decryptor.finalize()
+	#XOR before feeding into the decrypt block
+	plaincryptogram2 = bytes.fromhex(hex(int(plaincryptogram2.hex(), 16) ^ int(cryptogram1.hex(), 16))[2:])
+	cipher = Cipher(algorithms.TripleDES(AuthKey), mode = modes.CBC(iv), backend=default_backend())
+	decryptor = cipher.decryptor()
+	cryptogram2 = decryptor.update(plaincryptogram2) + decryptor.finalize()
+	plaincryptogram3 = bytes.fromhex(hex(int(plaincryptogram3.hex(), 16) ^ int(cryptogram2.hex(), 16))[2:])
+	cipher = Cipher(algorithms.TripleDES(AuthKey), mode = modes.CBC(iv), backend=default_backend())
+	decryptor = cipher.decryptor()
+	cryptogram3 = decryptor.update(plaincryptogram3) + decryptor.finalize()
+
+	cryptogram = cryptogram1.hex() + cryptogram2.hex() + cryptogram3.hex()
+	print("Cryptogram = ", cryptogram)
+
+def nxp_ev1_crypto_example():
+	prevkey = "00112233445566778899AABBCCDDEEFF"
+	newkey = "A0A1A2A3A4A5A6A7A8A9AAABACADAEAF"
+	xored = hex(int(prevkey, 16) ^ int(newkey, 16))
+	print(xored)
+	AuthKey = "5DD4CBFC20A1988E1CDBAE322B315D57" #Table 63 example
+	#AuthKey = "04BC99A81DB7293FAA86CA225ECD7660" #Table 64 example
+	AuthKey = bytes.fromhex(AuthKey)
+	plaincryptogram = "a0b08090e0f0c0d02030001060704050" + "03" + "05FC3BD7" + "90DBDA4D" + "00000000000000" #Table 63 example
+	#plaincryptogram = "B0B1B2B3B4B5B6B7B8B9BABBBCBDBEBF01B7EE5C9A0000000000000000000000" #Table 64 example
+	print(len(plaincryptogram))
+	print("plaincryptogram = ", plaincryptogram)
+	plaincryptogram = bytes.fromhex(plaincryptogram)
+	iv = "70873F2D468019A38E7184FE5208F607"
+	iv = bytes.fromhex(iv)
+	cipher = Cipher(algorithms.AES(AuthKey), mode = modes.CBC(iv), backend=default_backend())
+	encryptor = cipher.encryptor()
+	cryptogram = encryptor.update(plaincryptogram) + encryptor.finalize()
+	cryptogram = cryptogram.hex()
+	print("Cryptogram = ", cryptogram)
+
+	print("SAMPLE AUTHENTICATE_AES")
+	encryptedRndB = "C5537C8EFFFCC7E152C27831AFD383BA"
+	encryptedRndB = bytes.fromhex(encryptedRndB)
+	startiv = "00"*16
+	startiv = bytes.fromhex(startiv)
+	key = "00"*16
+	key = bytes.fromhex(key)
+	cipher = Cipher(algorithms.AES(key), modes.CBC(startiv), backend=default_backend())
+	decryptor = cipher.decryptor()
+	RndB = decryptor.update(encryptedRndB) + decryptor.finalize()
+	RndB = RndB.hex()
+	print("RndB (plaintext) = ", RndB)
+
+	RndA = "2347C1557F80707ABDFF86BF9D965CA7"
+	RndAB = RndA + "a0353a7d2947d8bbc6ad6fb52fca841e"
+	RndAB = bytes.fromhex(RndAB)
+	startiv = "C5537C8EFFFCC7E152C27831AFD383BA"
+	startiv = bytes.fromhex(startiv)
+	cipher = Cipher(algorithms.AES(key), modes.CBC(startiv), backend=default_backend())
+	encryptor = cipher.encryptor()
+	encryptedRndAB = encryptor.update(RndAB) + encryptor.finalize()
+	encryptedRndAB = encryptedRndAB.hex()
+	print("encryptedRndAB = ", encryptedRndAB)
+
+
+
+"""****MAIN PROGRAM****"""
+
+connection = connect_reader()
+
+#getUID(connection)
+#getATS(connection)
+
+#For some reason, running getVersion and then proximityCheck breaks things.
+#getVersion(connection)
+
+proximityCheck(connection)
+
+key = "00"*16
+key = bytes.fromhex(key)
+#sessionKey = authenticate(connection, "00", key) #Authenticate using PICCMasterKey
+#sessionKey, currentIV = authenticateAES(connection, "20", key) #AuthenticateAES using VCConfigurationKey
+currentIV = "00"*16 #One of the exceptions during EV1 secure messaging
+
+
+key = "00"*16
+#changeKeyD40("20", key, sessionKey) #VCConfigurationKey
+#changeKeyEV1("21", key, sessionKey, currentIV) #VCProximityKey
+#getKeyVersion("20") #VCConfigurationKey
+#getKeyVersion("21") #VCProximityKey
+
+#nxp_d40_crypto_example()
+#nxp_ev1_crypto_example()
+
