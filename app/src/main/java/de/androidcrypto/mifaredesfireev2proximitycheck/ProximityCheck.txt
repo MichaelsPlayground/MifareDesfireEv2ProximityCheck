@@ -17,7 +17,7 @@ where:
 
 A response APDU is defined as (Response, SW1, SW2)
 
-See code here:
+See code here: https://replit.com/@javacrypto/ProxyCheck#main.py
 
 
 """

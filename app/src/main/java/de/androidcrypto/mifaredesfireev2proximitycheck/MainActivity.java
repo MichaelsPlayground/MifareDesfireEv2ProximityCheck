@@ -334,6 +334,30 @@ public class MainActivity extends AppCompatActivity implements NfcAdapter.Reader
         byte[] cryptogramBByteE = Utils.hexStringToByteArray("C1C2C3C4C5C6C7C8");
         byte[] plainCryptogramCByteE = Utils.hexStringToByteArray("7fc05118abb0");
 
+// 201bf0ae5ba7031366ba9a2aafb9ca140418e4ae46b6d2a693
+
+
+        // this are the results
+/*
+https://replit.com/@javacrypto/ProxyCheck
+decrypt D40 test
+AuthKey:  00000000123456780000000012345678
+iv:  0000000000000000
+Pt1:  b1b2b3b4b5b6b7b8
+Pt2:  b9babbbcbdbebfb0
+Pt3:  d1d2d3d4d5d6d7d8
+ct1:  1bf0ae5ba7031366
+Pt2 XORED:  a24a15e71abdacd6
+ct2:  ba9a2aafb9ca1404
+Pt3 XORED:  6b48f97b6c1cc3dc
+ct3:  18e4ae46b6d2a693
+Cryptogram =  1bf0ae5ba7031366ba9a2aafb9ca140418e4ae46b6d2a693
+cmd_string =  [32, 27, 240, 174, 91, 167, 3, 19, 102, 186, 154, 42, 175, 185, 202, 20, 4, 24, 228, 174, 70, 182, 210, 166, 147]
+201bf0ae5ba7031366ba9a2aafb9ca140418e4ae46b6d2a693
+ */
+
+
+
 
         return false;
     }
