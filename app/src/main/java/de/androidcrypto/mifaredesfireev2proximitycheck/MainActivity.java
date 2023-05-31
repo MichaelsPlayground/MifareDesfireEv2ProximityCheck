@@ -210,16 +210,101 @@ public class MainActivity extends AppCompatActivity implements NfcAdapter.Reader
                 //byte[] vcConfigurationKeyVersion = getKeyVersion(readResult, isoDep, VC_PROXIMITY_KEY_NUMBER, true, null);
                 writeToUiAppend(readResult, printData("key version", vcConfigurationKeyVersion)); // will give an 7E = length error if not set
 
+
+
                 writeToUiAppend(readResult, "");
                 writeToUiAppend(readResult, "change VC Configuration key start");
                 result = changeVcConfigurationKey(readResult, isoDep, VC_CONFIGURATION_KEY_NUMBER, AES_KEY, AES_KEY, true, null);
                 writeToUiAppend(readResult, "changeVcConfigurationKey result: " + result);
+
+                writeToUiAppend(readResult, "");
+                writeToUiAppend(readResult, "D40 Crypto Example");
+                d40CryptoExample(readResult); // just for testing to get the same results
+                writeToUiAppend(readResult, "");
 
             } else {
                 writeToUiAppend(readResult, "IsoDep == null");
             }
         } catch (IOException e) {
             writeToUiAppend(readResult, "ERROR IOException: " + e);
+            e.printStackTrace();
+        }
+    }
+
+    private void d40CryptoExample(TextView logTextView) {
+        // see https://replit.com/@javacrypto/ProxyCheck#main.py/*
+ /*
+AuthKey:  00000000123456780000000012345678
+iv:  0000000000000000
+Pt1:  b1b2b3b4b5b6b7b8
+Pt2:  b9babbbcbdbebfb0
+Pt3:  d1d2d3d4d5d6d7d8
+ct1:  1bf0ae5ba7031366
+Pt2 XORED:  a24a15e71abdacd6
+ct2:  ba9a2aafb9ca1404
+Pt3 XORED:  6b48f97b6c1cc3dc
+ct3:  18e4ae46b6d2a693
+Cryptogram =  1bf0ae5ba7031366ba9a2aafb9ca140418e4ae46b6d2a693
+cmd_string =  [32, 27, 240, 174, 91, 167, 3, 19, 102, 186, 154, 42, 175, 185, 202, 20, 4, 24, 228, 174, 70, 182, 210, 166, 147]
+201bf0ae5ba7031366ba9a2aafb9ca140418e4ae46b6d2a693
+  */
+        // data from Python original code
+        byte[] authKey = Utils.hexStringToByteArray("0000000012345678");
+        byte[] iv = Utils.hexStringToByteArray("0000000000000000");
+        byte[] pt1 = Utils.hexStringToByteArray("b1b2b3b4b5b6b7b8");
+        byte[] pt2 = Utils.hexStringToByteArray("b9babbbcbdbebfb0");
+        byte[] pt2Xor = Utils.hexStringToByteArray("a24a15e71abdacd6");
+        byte[] pt3 = Utils.hexStringToByteArray("d1d2d3d4d5d6d7d8");
+        byte[] pt3Xor = Utils.hexStringToByteArray("6b48f97b6c1cc3dc");
+        byte[] ct1Exp = Utils.hexStringToByteArray("1bf0ae5ba7031366");
+        byte[] ct2Exp = Utils.hexStringToByteArray("ba9a2aafb9ca1404");
+        byte[] ct3Exp = Utils.hexStringToByteArray("18e4ae46b6d2a693");
+        byte[] cryptogramExp = Utils.hexStringToByteArray( "1bf0ae5ba7031366ba9a2aafb9ca140418e4ae46b6d2a693");
+        byte[] cmdStringExp = Utils.hexStringToByteArray("201bf0ae5ba7031366ba9a2aafb9ca140418e4ae46b6d2a693");
+
+        try {
+            // decrypt pt1
+            byte[] ct1 = decryptDes(pt1, authKey, iv);
+            writeToUiAppend(logTextView, printData("ct1   ", ct1));
+            writeToUiAppend(logTextView, printData("ct1Exp", ct1Exp));
+
+            // decrypt p2
+            byte[] pt2X = xor(pt2, ct1);
+            writeToUiAppend(logTextView, printData("pt2X  ", pt2X));
+            writeToUiAppend(logTextView, printData("pt2Xor", pt2Xor));
+            byte[] ct2 = decryptDes(pt2X, authKey, iv);
+            writeToUiAppend(logTextView, printData("ct2   ", ct2));
+            writeToUiAppend(logTextView, printData("ct2Exp", ct2Exp));
+
+            // decrypt p3
+            byte[] pt3X = xor(pt3, ct2);
+            writeToUiAppend(logTextView, printData("pt3X  ", pt3X));
+            writeToUiAppend(logTextView, printData("pt3Xor", pt3Xor));
+            byte[] ct3 = decryptDes(pt3X, authKey, iv);
+            writeToUiAppend(logTextView, printData("ct3   ", ct3));
+            writeToUiAppend(logTextView, printData("ct3Exp", ct3Exp));
+
+            // get cryptogram
+            byte[] cryptogram = new byte[24];
+            System.arraycopy(ct1, 0, cryptogram, 0, 8);
+            System.arraycopy(ct2, 0, cryptogram, 8, 8);
+            System.arraycopy(ct3, 0, cryptogram, 16, 8);
+            writeToUiAppend(logTextView, printData("cryptogram   ", cryptogram));
+            writeToUiAppend(logTextView, printData("cryptogramExp", cryptogramExp));
+            writeToUiAppend(logTextView, "cryptogram arrays are equal: " + Arrays.equals(cryptogram, cryptogramExp));
+
+            // get command string
+            byte[] command = new byte[25];
+            command[0] = VC_CONFIGURATION_KEY_NUMBER;
+            System.arraycopy(cryptogram, 0, command, 1, 24);
+            writeToUiAppend(logTextView, printData("command   ", command));
+            writeToUiAppend(logTextView, printData("commandExp", cmdStringExp));
+            writeToUiAppend(logTextView, "command arrays are equal: " + Arrays.equals(command, cmdStringExp));
+
+
+        } catch (Exception e) {
+            //throw new RuntimeException(e);
+            writeToUiAppend(logTextView, "Exception: " + e.getMessage());
             e.printStackTrace();
         }
     }
@@ -310,6 +395,35 @@ public class MainActivity extends AppCompatActivity implements NfcAdapter.Reader
         //	#print("cmd_string = ", cmd_string)
         //	sw2, data = send_mfpcmd(connection, COMMAND_CODE, cmd_string)
         //	#print("Change key response = ", data)
+
+        // work with real data
+        writeToUiAppend(logTextView, "");
+        writeToUiAppend(logTextView, "real data");
+        byte keyVersion = (byte) 0x00;
+        byte[] plaintext = new byte[24];
+        System.arraycopy(newAesKey, 0, plaintext,0, 16);
+        plaintext[16] = keyVersion; // key number
+        byte[] keyKeyNumber = new byte[17]; // calculate the first crc from this data
+        System.arraycopy(newAesKey, 0, keyKeyNumber,0, 16);
+        keyKeyNumber[16] = keyVersion; // key number
+        byte[] crc16First = CRC16.get(keyKeyNumber);
+        writeToUiAppend(logTextView, printData("crc16First ", crc16First));
+        byte[] crc16Second = CRC16.get(newAesKey);
+        writeToUiAppend(logTextView, printData("crc16Second", crc16Second));
+        System.arraycopy(crc16First, 0, plaintext,17, 2);
+        System.arraycopy(crc16Second, 0, plaintext,19, 2);
+        System.arraycopy(new byte[3], 0, plaintext,21, 3); // padding
+        // split the array in 3 parts
+        byte[] plaintext1 = new byte[8];
+        byte[] plaintext2 = new byte[8];
+        byte[] plaintext3 = new byte[8];
+        plaintext1 = Arrays.copyOfRange(plaintext, 0, 8);
+        plaintext2 = Arrays.copyOfRange(plaintext, 8, 16);
+        plaintext3 = Arrays.copyOfRange(plaintext, 16, 24);
+        writeToUiAppend(logTextView, printData("plaintext ", plaintext));
+        writeToUiAppend(logTextView, printData("plaintext1", plaintext1));
+        writeToUiAppend(logTextView, printData("plaintext2", plaintext2));
+        writeToUiAppend(logTextView, printData("plaintext3", plaintext3));
 
         // as it is a single DES cryptography I'm using the first part of the SESSION_KEY_DES only
         byte[] SESSION_KEY_DES_HALF = Arrays.copyOf(SESSION_KEY_DES, 8);
@@ -880,6 +994,7 @@ cmd_string =  [32, 27, 240, 174, 91, 167, 3, 19, 102, 186, 154, 42, 175, 185, 20
         runOnUiThread(() -> {
             String newString = textView.getText().toString() + "\n" + message;
             textView.setText(newString);
+            Log.d(TAG, message);
         });
     }
 
