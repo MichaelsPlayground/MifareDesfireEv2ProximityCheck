@@ -330,6 +330,9 @@ public class MainActivity extends AppCompatActivity implements NfcAdapter.Reader
         PlaintextCryptogram2 = bytes.fromhex(hex(int(PlaintextCryptogram2.hex(), 16) ^ int(Cryptogram1.hex(), 16))[2:])
         xor result 0x7fc05118abb0
          */
+        byte[] plainCryptogramAByteE = Utils.hexStringToByteArray("B1B2B3B4B5B6B7B8");
+        byte[] cryptogramBByteE = Utils.hexStringToByteArray("C1C2C3C4C5C6C7C8");
+        byte[] plainCryptogramCByteE = Utils.hexStringToByteArray("7fc05118abb0");
 
 
         return false;
