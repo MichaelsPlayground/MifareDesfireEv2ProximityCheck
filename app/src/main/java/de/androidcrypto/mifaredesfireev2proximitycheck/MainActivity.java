@@ -61,8 +61,9 @@ public class MainActivity extends AppCompatActivity implements NfcAdapter.Reader
     private byte[] SESSION_KEY_AES = new byte[16]; // just temporary 0x00's, get filled in authenticateAes
     private byte[] IV_DES = new byte[8]; // just temporary 0x00's, get filled in authenticateDes
     private byte[] IV_AES = new byte[16]; // just temporary 0x00's, get filled in authenticateAes
+
     /**
-     * section constants for keys
+     * section constants for keys and AIDs
      */
 
     private final byte[] DES_KEY = new byte[8]; // default, 8 bytes filled with 0x00
@@ -70,13 +71,16 @@ public class MainActivity extends AppCompatActivity implements NfcAdapter.Reader
     private final byte MASTER_KEY_NUMBER = (byte) 0x00;
     private final byte VC_CONFIGURATION_KEY_NUMBER = (byte) 0x20;
     private final byte VC_PROXIMITY_KEY_NUMBER = (byte) 0x21;
+    private final byte[] MASTER_APPLICATION_ID = new byte[3];
 
     /**
      * section constants for commands
      */
 
     private final byte GET_UID = (byte) 0x51;
+    private final byte SELECT_APPLICATION = (byte) 0x5A; // used to select the Master APPLICATION
     private final byte AUTH_DES = (byte) 0x1A;
+    private final byte CHANGE_VC_CONFIGURATION_KEY = (byte) 0xC4; // changes the key 0x20 to an AES key
 
     /**
      * section constants for responses
@@ -172,13 +176,37 @@ public class MainActivity extends AppCompatActivity implements NfcAdapter.Reader
                 writeToUiAppend(readResult, "GET UID");
 
                 Response response = sendData(isoDep, GET_UID, null);
-
                 writeToUiAppend(readResult, printData("data", response.getData()) + " sw1: " + response.getSw1() + " sw2: " + response.getSw2());
-
                 if (!checkResponse(readResult, response)) {
-                    return;
+                    //return;
+                };
+
+                // select the  Master APPLICATION
+                writeToUiAppend(readResult, "");
+                writeToUiAppend(readResult, "selectMasterApplication start");
+                boolean result = selectApplicationDes(readResult, isoDep, MASTER_APPLICATION_ID, true, null);
+                writeToUiAppend(readResult, "selectMasterApplication result: " + result);
+
+                // authenticate with the PICC master key
+                writeToUiAppend(readResult, "");
+                writeToUiAppend(readResult, "authenticateDes start");
+                result = authenticateDes(readResult, isoDep, MASTER_KEY_NUMBER, DES_KEY, true, null);
+                writeToUiAppend(readResult, "authenticateDes result: " + result);
+
+                // now we are trying to read the UID after authentication
+                writeToUiAppend(readResult, "");
+                writeToUiAppend(readResult, "getUID start");
+                response = sendData(isoDep, GET_UID, null);
+                writeToUiAppend(readResult, printData("data", response.getData()) + " sw1: " + response.getSw1() + " sw2: " + response.getSw2());
+                if (!checkResponse(readResult, response)) {
+                    //return;
                 };
                 writeToUiAppend(readResult, printData("get UID", response.getData()));
+
+                writeToUiAppend(readResult, "");
+                writeToUiAppend(readResult, "change VC Configuration key start");
+                result = changeVcConfigurationKey(readResult, isoDep, VC_CONFIGURATION_KEY_NUMBER, AES_KEY, AES_KEY, true, null);
+
 
             } else {
                 writeToUiAppend(readResult, "IsoDep == null");
@@ -188,6 +216,45 @@ public class MainActivity extends AppCompatActivity implements NfcAdapter.Reader
             e.printStackTrace();
         }
     }
+
+    /**
+     * section for changing the VC Configuration key
+     */
+
+    private boolean changeVcConfigurationKey(TextView readResult, IsoDep isoDep, byte vc_configuration_key_number, byte[] oldAesKey, byte[] newAesKey, boolean verbose, byte[] result) {
+
+
+
+        return false;
+    }
+
+
+    /**
+     * section for selecting the master application
+     */
+
+    private boolean selectApplicationDes(TextView logTextView, IsoDep isoDep, byte[] applicationIdentifier, boolean verbose, byte[] result) {
+        try {
+            writeToUiAppend(logTextView, "selectApplication for AID " + Utils.bytesToHex(applicationIdentifier));
+            Response getSelectApplicationResponse = sendData(isoDep, SELECT_APPLICATION, applicationIdentifier);
+            //byte[] getChallengeResponse = isoDep.transceive(wrapMessage(AUTH_DES, new byte[]{(byte) (keyId & 0xFF)}));
+            if (verbose) {
+                writeToUiAppend(logTextView, printData("getSelectApplicationCommand ", getSelectApplicationResponse.getCommand()));
+                writeToUiAppend(logTextView, printData("getSelectApplicationResponse", getSelectApplicationResponse.getFullResponse()));
+            }
+            if (checkResponse(logTextView, getSelectApplicationResponse)) {
+                return true;
+            }
+        } catch (Exception e) {
+            //throw new RuntimeException(e);
+            writeToUiAppend(logTextView, "selectApplicationDes failed: " + e.getMessage());
+            writeToUiAppend(logTextView, "selectApplicationDes failed: " + Arrays.toString(e.getStackTrace()));
+            e.printStackTrace();
+        }
+        return false;
+    }
+
+
 
     /**
      * section for authentication with DES
@@ -200,8 +267,10 @@ public class MainActivity extends AppCompatActivity implements NfcAdapter.Reader
             // do DES auth
             Response getChallengeResponse = sendData(isoDep, AUTH_DES, new byte[]{(byte) (keyId & 0xFF)});
             //byte[] getChallengeResponse = isoDep.transceive(wrapMessage(AUTH_DES, new byte[]{(byte) (keyId & 0xFF)}));
-            if (verbose)
+            if (verbose) {
+                writeToUiAppend(logTextView, printData("getChallengeCommand ", getChallengeResponse.getCommand()));
                 writeToUiAppend(logTextView, printData("getChallengeResponse", getChallengeResponse.getFullResponse()));
+            }
             // cf5e0ee09862d90391af
             // 91 af at the end shows there is more data
 
@@ -303,10 +372,9 @@ public class MainActivity extends AppCompatActivity implements NfcAdapter.Reader
             //return false;
         } catch (Exception e) {
             //throw new RuntimeException(e);
-            writeToUiAppend(logTextView, "authenticateApplicationDes transceive failed: " + e.getMessage());
-            writeToUiAppend(logTextView, "authenticateApplicationDes transceive failed: " + Arrays.toString(e.getStackTrace()));
+            writeToUiAppend(logTextView, "authenticateDes transceive failed: " + e.getMessage());
+            writeToUiAppend(logTextView, "authenticateDes transceive failed: " + Arrays.toString(e.getStackTrace()));
         }
-        //System.arraycopy(createApplicationResponse, 0, response, 0, createApplicationResponse.length);
         return false;
     }
 
@@ -383,6 +451,8 @@ public class MainActivity extends AppCompatActivity implements NfcAdapter.Reader
         return concatenated;
     }
 
+
+
     /**
      * section for the sending of a command with or without parameters/data to a card
      */
@@ -394,7 +464,7 @@ public class MainActivity extends AppCompatActivity implements NfcAdapter.Reader
             if (parameters == null) {
                 wrappedCommand = wrapMessage(command);
             } else {
-                wrapMessage(command, parameters);
+                wrappedCommand = wrapMessage(command, parameters);
             }
             Log.d(TAG, printData("wrappedCommand" , wrappedCommand));
             response = isoDep.transceive(wrappedCommand);
@@ -434,15 +504,15 @@ public class MainActivity extends AppCompatActivity implements NfcAdapter.Reader
      * section for wrapping a native command in ISO/IEC 7816-4 structure
      */
 
-    public static byte[] wrapMessage(byte command)  {
+    public byte[] wrapMessage(byte command)  {
         return new byte[]{(byte) 0x90, command, 0x00, 0x00, 0x00};
     }
 
-    public static byte[] wrapMessage(byte command, byte[] parameters) {
+    public byte[] wrapMessage(byte command, byte[] parameters) {
         return wrapMessage(command, parameters, 0, parameters.length);
     }
 
-    public static byte[] wrapMessage(byte command, byte[] parameters, int offset, int length) {
+    public byte[] wrapMessage(byte command, byte[] parameters, int offset, int length) {
         ByteArrayOutputStream stream = new ByteArrayOutputStream();
         stream.write((byte) 0x90);
         stream.write(command);
