@@ -16,6 +16,10 @@ where:
 	Le = Encodes the maximum number (Ne) of response bytes expected
 
 A response APDU is defined as (Response, SW1, SW2)
+
+See code here:
+
+
 """
 
 from smartcard.Exceptions import NoCardException

@@ -80,7 +80,8 @@ public class MainActivity extends AppCompatActivity implements NfcAdapter.Reader
     private final byte GET_UID = (byte) 0x51;
     private final byte SELECT_APPLICATION = (byte) 0x5A; // used to select the Master APPLICATION
     private final byte AUTH_DES = (byte) 0x1A;
-    private final byte CHANGE_VC_CONFIGURATION_KEY = (byte) 0xC4; // changes the key 0x20 to an AES key
+    private final byte GET_KEY_VERSION = (byte) 0x64;
+    private final byte CHANGE_VC_KEY = (byte) 0xC4; // changes the key 0x20 and #0x21 to AES keys
 
     /**
      * section constants for responses
@@ -204,9 +205,15 @@ public class MainActivity extends AppCompatActivity implements NfcAdapter.Reader
                 writeToUiAppend(readResult, printData("get UID", response.getData()));
 
                 writeToUiAppend(readResult, "");
+                writeToUiAppend(readResult, "get VC Configuration key version start");
+                byte[] vcConfigurationKeyVersion = getKeyVersion(readResult, isoDep, VC_CONFIGURATION_KEY_NUMBER, true, null);
+                //byte[] vcConfigurationKeyVersion = getKeyVersion(readResult, isoDep, VC_PROXIMITY_KEY_NUMBER, true, null);
+                writeToUiAppend(readResult, printData("key version", vcConfigurationKeyVersion)); // will give an 7E = length error if not set
+
+                writeToUiAppend(readResult, "");
                 writeToUiAppend(readResult, "change VC Configuration key start");
                 result = changeVcConfigurationKey(readResult, isoDep, VC_CONFIGURATION_KEY_NUMBER, AES_KEY, AES_KEY, true, null);
-
+                writeToUiAppend(readResult, "changeVcConfigurationKey result: " + result);
 
             } else {
                 writeToUiAppend(readResult, "IsoDep == null");
@@ -218,11 +225,111 @@ public class MainActivity extends AppCompatActivity implements NfcAdapter.Reader
     }
 
     /**
-     * section for changing the VC Configuration key
+     * key version data
      */
 
-    private boolean changeVcConfigurationKey(TextView readResult, IsoDep isoDep, byte vc_configuration_key_number, byte[] oldAesKey, byte[] newAesKey, boolean verbose, byte[] result) {
+    private byte[] getKeyVersion(TextView logTextView, IsoDep isoDep, byte keyId, boolean verbose, byte[] result) {
+        writeToUiAppend(logTextView, "getKeyVersion for keyId " + keyId);
+        try {
+        Response response = sendData(isoDep, GET_KEY_VERSION, null);
+        writeToUiAppend(readResult, printData("data", response.getData()) + " sw1: " + String.format("%02X", response.getSw1()) + " sw2: " + String.format("%02X", response.getSw2()));
+            if (verbose) {
+                writeToUiAppend(logTextView, printData("getKeyVersionCommand ", response.getCommand()));
+                writeToUiAppend(logTextView, printData("getKeyVersionResponse", response.getFullResponse()));
+            }
+            if (checkResponse(logTextView, response)) {
+                return response.getData();
+            }
+        } catch (Exception e) {
+            //throw new RuntimeException(e);
+            writeToUiAppend(logTextView, "getKeyVersion failed: " + e.getMessage());
+            writeToUiAppend(logTextView, "getKeyVersion failed: " + Arrays.toString(e.getStackTrace()));
+            e.printStackTrace();
+        }
+        return null;
+    }
 
+    /**
+     * section for working with the VC Configuration key
+     */
+
+    private boolean changeVcConfigurationKey(TextView logTextView, IsoDep isoDep, byte vcConfigurationKeyNumber, byte[] oldAesKey, byte[] newAesKey, boolean verbose, byte[] result) {
+
+        // #Calculate the crytogram; see Section 6.5.6.1 of the datasheet. We are using D40 secure messaging.
+        //	plaincryptogram = key
+        //	plaincryptogram += "00" #KeyVer
+        //	plaincryptogram += "7545" #CRC16, CRC of "0x00*16 0x00" = 0x75 0x45
+        //	plaincryptogram += "3749" #CRC16NK, CRC of "0x00*16" = 0x37 0x49
+        //	plaincryptogram += "000000" #Pad 3 bytes to get to 24 bytes
+
+        // todo change to real data
+        String plainCryptogram = "00000000000000000000000000000000"; // 32 chars = 16 bytes long key
+        plainCryptogram += "00"; // key version
+        plainCryptogram += "7545"; // CRC16, CRC of "0x00*16 0x00" = 0x75 0x45
+        plainCryptogram += "3749"; // CRC16NK, CRC of "0x00*16" = 0x37 0x49
+        plainCryptogram += "000000"; // Pad 3 bytes to get to 24 bytes
+        writeToUiAppend(logTextView, "plainCryptogram: " + plainCryptogram);
+
+        // #Manually break the plain cryptogram into three 8-byte segments
+        //	plaincryptogram1 = plaincryptogram[0:16]
+        //	plaincryptogram1 = bytes.fromhex(plaincryptogram1)
+        //	plaincryptogram2 = plaincryptogram[16:32]
+        //	plaincryptogram2 = bytes.fromhex(plaincryptogram2)
+        //	plaincryptogram3 = plaincryptogram[32:48]
+        //	plaincryptogram3 = bytes.fromhex(plaincryptogram3)
+        //	iv = "00"*8
+        //	iv = bytes.fromhex(iv)
+        String plainCryptogram1 = plainCryptogram.substring(0, 16);
+        String plainCryptogram2 = plainCryptogram.substring(16, 32);
+        String plainCryptogram3 = plainCryptogram.substring(32, 48);
+        byte[] plainCryptogram1Byte = Utils.hexStringToByteArray(plainCryptogram1);
+        byte[] plainCryptogram2Byte = Utils.hexStringToByteArray(plainCryptogram2);
+        byte[] plainCryptogram3Byte = Utils.hexStringToByteArray(plainCryptogram3);
+        byte[] ivDes = new byte[8];
+        writeToUiAppend(logTextView, printData("plainCryptogram1Byte", plainCryptogram1Byte));
+        writeToUiAppend(logTextView, printData("plainCryptogram2Byte", plainCryptogram2Byte));
+        writeToUiAppend(logTextView, printData("plainCryptogram3Byte", plainCryptogram3Byte));
+        writeToUiAppend(logTextView, printData("ivDes", ivDes));
+
+        // cipher = Cipher(algorithms.TripleDES(AuthKey), mode = modes.CBC(iv), backend=default_backend())
+        //	decryptor = cipher.decryptor()
+        //	cryptogram1 = decryptor.update(plaincryptogram1) + decryptor.finalize()
+        //	#XOR before feeding into the decrypt block
+        //	plaincryptogram2 = bytes.fromhex(hex(int(plaincryptogram2.hex(), 16) ^ int(cryptogram1.hex(), 16))[2:])
+        //	cryptogram2 = decryptor.update(plaincryptogram2) + decryptor.finalize()
+        //	plaincryptogram3 = bytes.fromhex(hex(int(plaincryptogram3.hex(), 16) ^ int(cryptogram2.hex(), 16))[2:])
+        //	cryptogram3 = decryptor.update(plaincryptogram3) + decryptor.finalize()
+        //	cryptogram = cryptogram1.hex() + cryptogram2.hex() + cryptogram3.hex()
+        //	print("Cryptogram = ", cryptogram)
+        //	#cryptogram = ("00"*24) #test sending all 0's as the cryptogram
+        //	cmd_string = [keynum]
+        //	i = 0
+        //	for _ in range(0, int(len(cryptogram) / 2)):
+        //		cmd_string.append(int(cryptogram[i:i+2], 16))
+        //		i += 2
+        //	#print("cmd_string = ", cmd_string)
+        //	sw2, data = send_mfpcmd(connection, COMMAND_CODE, cmd_string)
+        //	#print("Change key response = ", data)
+
+        // as it is a single DES cryptography I'm using the first part of the SESSION_KEY_DES only
+        byte[] SESSION_KEY_DES_HALF = Arrays.copyOf(SESSION_KEY_DES, 8);
+
+        byte[] cryptogram1;
+        try {
+            cryptogram1 = decryptDes(plainCryptogram1Byte, SESSION_KEY_DES_HALF, ivDes);
+            writeToUiAppend(logTextView, printData("cryptogram1", cryptogram1));
+        } catch (Exception e) {
+            //throw new RuntimeException(e);
+            writeToUiAppend(logTextView, "error on decrypting: " + e.getMessage());
+            e.printStackTrace();
+            return false;
+        }
+        /*
+        PlaintextCryptogram2 = bytes.fromhex("B1B2B3B4B5B6B7B8")
+        Cryptogram1 = bytes.fromhex("C1C2C3C4C5C6C7C8")
+        PlaintextCryptogram2 = bytes.fromhex(hex(int(PlaintextCryptogram2.hex(), 16) ^ int(Cryptogram1.hex(), 16))[2:])
+        xor result 0x7fc05118abb0
+         */
 
 
         return false;
@@ -239,8 +346,8 @@ public class MainActivity extends AppCompatActivity implements NfcAdapter.Reader
             Response getSelectApplicationResponse = sendData(isoDep, SELECT_APPLICATION, applicationIdentifier);
             //byte[] getChallengeResponse = isoDep.transceive(wrapMessage(AUTH_DES, new byte[]{(byte) (keyId & 0xFF)}));
             if (verbose) {
-                writeToUiAppend(logTextView, printData("getSelectApplicationCommand ", getSelectApplicationResponse.getCommand()));
-                writeToUiAppend(logTextView, printData("getSelectApplicationResponse", getSelectApplicationResponse.getFullResponse()));
+                writeToUiAppend(logTextView, printData("selectApplicationCommand ", getSelectApplicationResponse.getCommand()));
+                writeToUiAppend(logTextView, printData("selectApplicationResponse", getSelectApplicationResponse.getFullResponse()));
             }
             if (checkResponse(logTextView, getSelectApplicationResponse)) {
                 return true;
@@ -254,7 +361,23 @@ public class MainActivity extends AppCompatActivity implements NfcAdapter.Reader
         return false;
     }
 
-
+    private byte[] xor(byte[] dataA, byte[] dataB) {
+        if ((dataA == null) || (dataB == null)) {
+            Log.e(TAG, "xor - dataA or dataB is NULL, aborted");
+            return null;
+        }
+        // sanity check - both arrays need to be of the same length
+        int dataALength = dataA.length;
+        int dataBLength = dataB.length;
+        if (dataALength != dataBLength) {
+            Log.e(TAG, "xor - dataA and dataB lengths are different, aborted (dataA: " + dataALength + " dataB: " + dataBLength + " bytes)");
+            return null;
+        }
+        for (int i = 0; i < dataALength; i++) {
+            dataA[i] ^= dataB[i];
+        }
+        return dataA;
+    }
 
     /**
      * section for authentication with DES
@@ -361,6 +484,11 @@ public class MainActivity extends AppCompatActivity implements NfcAdapter.Reader
             //System.arraycopy(createApplicationResponse, 0, response, 0, createApplicationResponse.length);
             if (Arrays.equals(rndA, rndAFromCard)) {
                 writeToUiAppend(logTextView, "Authenticated");
+
+                // now generate the session key
+                SESSION_KEY_DES = generateD40SessionKey(rndA, rndB);
+                if (verbose)
+                    writeToUiAppend(logTextView, printData("SESSION_KEY_DES", SESSION_KEY_DES));
                 return true;
             } else {
                 writeToUiAppend(logTextView, "Authentication failed");
@@ -451,6 +579,67 @@ public class MainActivity extends AppCompatActivity implements NfcAdapter.Reader
         return concatenated;
     }
 
+    /**
+     * Generate the session key using the random A generated by the PICC and
+     * the random B generated by the PCD.
+     *
+     * @param randA the random number A
+     * @param randB the random number B
+     * @param type  the type of key
+     * @return the session key
+     */
+    private static byte[] generateSessionKey(byte[] randA, byte[] randB, KeyType type) {
+        byte[] skey = null;
+
+        switch (type) {
+            case DES:
+                skey = new byte[8];
+                System.arraycopy(randA, 0, skey, 0, 4);
+                System.arraycopy(randB, 0, skey, 4, 4);
+                break;
+            case TDES:
+                skey = new byte[16];
+                System.arraycopy(randA, 0, skey, 0, 4);
+                System.arraycopy(randB, 0, skey, 4, 4);
+                System.arraycopy(randA, 4, skey, 8, 4);
+                System.arraycopy(randB, 4, skey, 12, 4);
+                break;
+            case TKTDES:
+                skey = new byte[24];
+                System.arraycopy(randA, 0, skey, 0, 4);
+                System.arraycopy(randB, 0, skey, 4, 4);
+                System.arraycopy(randA, 6, skey, 8, 4);
+                System.arraycopy(randB, 6, skey, 12, 4);
+                System.arraycopy(randA, 12, skey, 16, 4);
+                System.arraycopy(randB, 12, skey, 20, 4);
+                break;
+            case AES:
+                skey = new byte[16];
+                System.arraycopy(randA, 0, skey, 0, 4);
+                System.arraycopy(randB, 0, skey, 4, 4);
+                System.arraycopy(randA, 12, skey, 8, 4);
+                System.arraycopy(randB, 12, skey, 12, 4);
+                break;
+            default:
+                assert false : type;  // never reached
+        }
+
+        return skey;
+    }
+
+    private static byte[] generateD40SessionKey(byte[] randA, byte[] randB) {
+        // this IS NOT described in the manual !!!
+        /*
+        RndA = 0000000000000000, RndB = A1A2A3A4A5A6A7A8
+        sessionKey = 00000000A1A2A3A400000000A1A2A3A4 (16 byte
+         */
+        byte[] skey = new byte[16];
+        System.arraycopy(randA, 0, skey, 0, 4);
+        System.arraycopy(randB, 0, skey, 4, 4);
+        System.arraycopy(randA, 0, skey, 8, 4);
+        System.arraycopy(randB, 0, skey, 12, 4);
+        return skey;
+    }
 
 
     /**
