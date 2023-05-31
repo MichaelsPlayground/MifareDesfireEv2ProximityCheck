@@ -7,21 +7,31 @@ import java.util.Arrays;
  */
 
 public class Response {
+    private byte[] command;
+    private byte[] fullResponse;
     private byte[] data;
     private byte sw1;
     private byte sw2;
 
-    public Response(byte[] fullData) {
+    public Response(byte[] command, byte[] fullResponse) {
 
-        // here we are splitting the fullData
-        if (fullData.length < 2) {
+        // some sanity checks
+        if ((command == null) || (fullResponse == null)) {
             this.data = null;
             this.sw1 = (byte) 0xFF;
             this.sw2 = (byte) 0xFF;
         }
-        this.data = Arrays.copyOf(fullData, fullData.length - 2);
-        this.sw1 = fullData[fullData.length - 2];
-        this.sw2 = fullData[fullData.length - 1];
+        if (fullResponse.length < 2) {
+            this.data = null;
+            this.sw1 = (byte) 0xFF;
+            this.sw2 = (byte) 0xFF;
+        }
+        this.command = command;
+        this.fullResponse = fullResponse;
+        // here we are splitting the fullResponse
+        this.data = Arrays.copyOf(fullResponse, fullResponse.length - 2);
+        this.sw1 = fullResponse[fullResponse.length - 2];
+        this.sw2 = fullResponse[fullResponse.length - 1];
     }
 
     public byte[] getData() {
@@ -34,5 +44,13 @@ public class Response {
 
     public byte getSw2() {
         return sw2;
+    }
+
+    public byte[] getCommand() {
+        return command;
+    }
+
+    public byte[] getFullResponse() {
+        return fullResponse;
     }
 }
