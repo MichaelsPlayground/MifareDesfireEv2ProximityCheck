@@ -67,9 +67,11 @@ public class MainActivity extends AppCompatActivity implements NfcAdapter.Reader
      */
 
     private final byte[] DES_KEY = new byte[8]; // default, 8 bytes filled with 0x00
+    private final byte[] DES_IV_DEFAULT = new byte[8]; // default, 8 bytes filled with 0x00
     private final byte[] AES_KEY = new byte[16]; // default, 16 bytes filled with 0x00
     private final byte MASTER_KEY_NUMBER = (byte) 0x00;
     private final byte VC_CONFIGURATION_KEY_NUMBER = (byte) 0x20;
+    private final byte VC_CONFIGURATION_KEY_VERSION = (byte) 0x00;
     private final byte VC_PROXIMITY_KEY_NUMBER = (byte) 0x21;
     private final byte[] MASTER_APPLICATION_ID = new byte[3];
 
@@ -193,7 +195,7 @@ public class MainActivity extends AppCompatActivity implements NfcAdapter.Reader
                 writeToUiAppend(readResult, "authenticateDes start");
                 result = authenticateDes(readResult, isoDep, MASTER_KEY_NUMBER, DES_KEY, true, null);
                 writeToUiAppend(readResult, "authenticateDes result: " + result);
-
+/*
                 // now we are trying to read the UID after authentication
                 writeToUiAppend(readResult, "");
                 writeToUiAppend(readResult, "getUID start");
@@ -203,19 +205,25 @@ public class MainActivity extends AppCompatActivity implements NfcAdapter.Reader
                     //return;
                 };
                 writeToUiAppend(readResult, printData("get UID", response.getData()));
+ */
+
+/*
+                writeToUiAppend(readResult, "");
+                writeToUiAppend(readResult, "get VC Configuration key version start");
+                byte[] vcConfigurationKeyVersion1 = getKeyVersion(readResult, isoDep, VC_CONFIGURATION_KEY_NUMBER, true, null);
+                //byte[] vcConfigurationKeyVersion = getKeyVersion(readResult, isoDep, VC_PROXIMITY_KEY_NUMBER, true, null);
+                writeToUiAppend(readResult, printData("key version", vcConfigurationKeyVersion1)); // will give an 7E = length error if not set
+*/
+                writeToUiAppend(readResult, "");
+                writeToUiAppend(readResult, "change VC Configuration key start");
+                result = changeVcConfigurationKey(readResult, isoDep, VC_CONFIGURATION_KEY_NUMBER, DES_IV_DEFAULT, AES_KEY, true, null);
+                writeToUiAppend(readResult, "changeVcConfigurationKey result: " + result);
 
                 writeToUiAppend(readResult, "");
                 writeToUiAppend(readResult, "get VC Configuration key version start");
                 byte[] vcConfigurationKeyVersion = getKeyVersion(readResult, isoDep, VC_CONFIGURATION_KEY_NUMBER, true, null);
                 //byte[] vcConfigurationKeyVersion = getKeyVersion(readResult, isoDep, VC_PROXIMITY_KEY_NUMBER, true, null);
                 writeToUiAppend(readResult, printData("key version", vcConfigurationKeyVersion)); // will give an 7E = length error if not set
-
-
-
-                writeToUiAppend(readResult, "");
-                writeToUiAppend(readResult, "change VC Configuration key start");
-                result = changeVcConfigurationKey(readResult, isoDep, VC_CONFIGURATION_KEY_NUMBER, AES_KEY, AES_KEY, true, null);
-                writeToUiAppend(readResult, "changeVcConfigurationKey result: " + result);
 
                 writeToUiAppend(readResult, "");
                 writeToUiAppend(readResult, "D40 Crypto Example");
@@ -338,7 +346,89 @@ cmd_string =  [32, 27, 240, 174, 91, 167, 3, 19, 102, 186, 154, 42, 175, 185, 20
      * section for working with the VC Configuration key
      */
 
-    private boolean changeVcConfigurationKey(TextView logTextView, IsoDep isoDep, byte vcConfigurationKeyNumber, byte[] oldAesKey, byte[] newAesKey, boolean verbose, byte[] result) {
+    private boolean changeVcConfigurationKey(TextView logTextView, IsoDep isoDep, byte vcConfigurationKeyNumber, byte[] iv, byte[] newAesKey, boolean verbose, byte[] result) {
+        if (verbose) writeToUiAppend(logTextView, "change VC Configuration key (0x20)");
+        byte[] plaintext = new byte[24]; // this is the final array
+        System.arraycopy(newAesKey, 0, plaintext,0, 16);
+        plaintext[16] = VC_CONFIGURATION_KEY_VERSION; // key number
+        byte[] keyKeyVersion = new byte[17]; // this array is for calculating the first crc from this data, holds the 16 bytes of the AES key and 1 byte for the key version
+        System.arraycopy(newAesKey, 0, keyKeyVersion,0, 16);
+        keyKeyVersion[16] = VC_CONFIGURATION_KEY_VERSION; // key version
+        byte[] crc16First = CRC16.get(keyKeyVersion);
+        if (verbose) writeToUiAppend(logTextView, printData("crc16First ", crc16First));
+        byte[] crc16Second = CRC16.get(newAesKey);
+        if (verbose) writeToUiAppend(logTextView, printData("crc16Second", crc16Second));
+        System.arraycopy(crc16First, 0, plaintext,17, 2);
+        System.arraycopy(crc16Second, 0, plaintext,19, 2);
+        System.arraycopy(new byte[3], 0, plaintext,21, 3); // padding
+        // split the array in 3 parts
+        byte[] plaintext1 = new byte[8];
+        byte[] plaintext2 = new byte[8];
+        byte[] plaintext3 = new byte[8];
+        plaintext1 = Arrays.copyOfRange(plaintext, 0, 8);
+        plaintext2 = Arrays.copyOfRange(plaintext, 8, 16);
+        plaintext3 = Arrays.copyOfRange(plaintext, 16, 24);
+        if (verbose) writeToUiAppend(logTextView, printData("plaintext ", plaintext));
+        if (verbose) writeToUiAppend(logTextView, printData("plaintext1", plaintext1));
+        if (verbose) writeToUiAppend(logTextView, printData("plaintext2", plaintext2));
+        if (verbose) writeToUiAppend(logTextView, printData("plaintext3", plaintext3));
+
+        // the second part is the "decryption" of the data in plaintext1-3
+
+        // as it is a single DES cryptography I'm using the first part of the SESSION_KEY_DES only
+        byte[] SESSION_KEY_DES_HALF = Arrays.copyOf(SESSION_KEY_DES, 8);
+
+        // decrypt plaintext1
+        byte[] ct1 = new byte[0];
+        byte[] ct2 = new byte[0];
+        byte[] ct3 = new byte[0];
+        try {
+            ct1 = decryptDes(plaintext1, SESSION_KEY_DES_HALF, iv);
+            if (verbose) writeToUiAppend(logTextView, printData("ct1   ", ct1));
+            // decrypt p2
+            byte[] pt2X = xor(plaintext2, ct1);
+            if (verbose) writeToUiAppend(logTextView, printData("pt2X  ", pt2X));
+            ct2 = decryptDes(pt2X, SESSION_KEY_DES_HALF, iv);
+            if (verbose) writeToUiAppend(logTextView, printData("ct2   ", ct2));
+            // decrypt p3
+            byte[] pt3X = xor(plaintext3, ct2);
+            if (verbose) writeToUiAppend(logTextView, printData("pt3X  ", pt3X));
+            ct3 = decryptDes(pt3X, SESSION_KEY_DES_HALF, iv);
+            if (verbose) writeToUiAppend(logTextView, printData("ct3   ", ct3));
+            // get cryptogram
+            byte[] cryptogram = new byte[24];
+            System.arraycopy(ct1, 0, cryptogram, 0, 8);
+            System.arraycopy(ct2, 0, cryptogram, 8, 8);
+            System.arraycopy(ct3, 0, cryptogram, 16, 8);
+            if (verbose) writeToUiAppend(logTextView, printData("cryptogram   ", cryptogram));
+
+            // complete parameter include the key number
+            byte[] parameters = new byte[25];
+            parameters[0] = VC_CONFIGURATION_KEY_NUMBER;
+            System.arraycopy(cryptogram, 0, parameters, 1, 24);
+            if (verbose) writeToUiAppend(logTextView, printData("parameters", parameters));
+
+            // now we are going to send the parameters to the card
+            if (verbose) writeToUiAppend(logTextView, "change key with parameters " + Utils.bytesToHex(parameters));
+
+            Response changeVcConfigurationKeyResponse = sendData(isoDep, CHANGE_VC_KEY, parameters);
+            if (verbose) {
+                if (verbose) writeToUiAppend(logTextView, printData("changeVcConfigurationKeyCommand ", changeVcConfigurationKeyResponse.getCommand()));
+                if (verbose) writeToUiAppend(logTextView, printData("changeVcConfigurationKeyResponse", changeVcConfigurationKeyResponse.getFullResponse()));
+            }
+            if (checkResponse(logTextView, changeVcConfigurationKeyResponse)) {
+                if (verbose) writeToUiAppend(logTextView, "changeVcConfigurationKeyCommand SUCCESS");
+                return true;
+            }
+        } catch (Exception e) {
+            //throw new RuntimeException(e);
+            if (verbose) writeToUiAppend(logTextView, "Exception: " + e.getMessage());
+            e.printStackTrace();
+        }
+        return false;
+    }
+
+    private boolean changeVcConfigurationKeyDemo(TextView logTextView, IsoDep isoDep, byte vcConfigurationKeyNumber, byte[] oldAesKey, byte[] newAesKey, boolean verbose, byte[] result) {
 
         // #Calculate the crytogram; see Section 6.5.6.1 of the datasheet. We are using D40 secure messaging.
         //	plaincryptogram = key
